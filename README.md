@@ -100,9 +100,7 @@ If the **FadeOut** addon is installed, OrbMeter registers with it as "Orb Meter"
 - Needs the combat log within range. Members far away or in another zone are not seen.
 - Item procs are counted as casts by adaptive tracking, so a trinket proc can add one to the run.
 - Healing ticks that land after a fight has ended are not counted.
-- Threat percentages assume the standard 3.3.5a meaning of `UnitDetailedThreatSituation`. If the tank-side number looks off, tell me.
-- The Druid form override uses spell icon names that I could not confirm in the client; `/om debug` prints what it sees.
-- The hover heading cannot be truly bold: WoW has no bold font.
+- Threat percentages assume the standard 3.3.5a meaning of `UnitDetailedThreatSituation`.
 
 ## Saved variables
 
