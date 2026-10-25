@@ -1,4 +1,6 @@
-# OrbMeter
+[Also check out my other addons!](https://github.com/X08/X08_WoW_3.3.5a)
+
+### [OrbMeter](https://github.com/X08/OrbMeter_3.3.5a)
 
 **A small orb that shows your damage or healing per second, with a threat ring. A simple, refined overview instead of a full meter window.**
 
