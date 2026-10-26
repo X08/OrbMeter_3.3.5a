@@ -2,7 +2,7 @@
 ## Title: OrbMeter |cff888888by X08|r
 ## Notes: A small orb showing your damage or healing per second, with a threat ring. Made by X08 | Dreamwind (ChromieCraft-EU)
 ## Author: X08 | Dreamwind (ChromieCraft-EU)
-## Version: 1.0
+## Version: 1.1
 ## X-Website: https://github.com/X08/OrbMeter_3.3.5a
 ## X-Category: Combat
 ## OptionalDeps: FadeOut

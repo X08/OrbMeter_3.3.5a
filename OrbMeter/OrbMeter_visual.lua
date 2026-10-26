@@ -29,6 +29,11 @@
     spells in a row switch it (/om adaptive turns that off); a left-click pins
     it by hand. Spec and form only set the starting mode, and only out of combat.
 
+    Raid Lead view (off by default, /om raidlead): a second panel that stays
+    beside the orb and shows the top 3 and bottom 3 of the group by damage,
+    then by healing, switching every 5 seconds, with a "~" row for the players
+    in between. Hovering the orb swaps it for the personal overview above.
+
     Right-click opens a menu: Personal Stats > Damage / Healing prints the
     full breakdown locally (current fight while one is going, then the last
     fight, then total), Report To posts a top-5 Damage Done or Effective
@@ -53,12 +58,14 @@
       /om options         open the options window
       /om adaptive [on|off]  the orb follows what you cast (damage <-> healing)
       /om hover last|total   what the hover overview shows
+      /om raidlead [on|off]  always-shown top 3 / bottom 3 of the group
       /om unlock          show the border and let you drag the orb
       /om lock            lock it again
       /om size <28-96>    orb size (28 is the default and the minimum)
       /om reset           reset the recorded logs (same as the menu's Reset Logs)
       /om combat          toggle the built-in dimming out of combat
       /om alpha <0-100>   opacity (%) the orb dims to out of combat
+      /om maxalpha <10-100>  opacity (%) in combat - the brightest the orb gets
       /om debug           print the tracking core's raw numbers
     combat and alpha only apply while FadeOut is NOT managing the orb.
 --]]
@@ -68,7 +75,7 @@
 --------------------------------------------------------------------------
 
 local ADDON_NAME = "OrbMeter"
-local ADDON_VERSION = GetAddOnMetadata(ADDON_NAME, "Version") or "1.0" -- from the .toc
+local ADDON_VERSION = GetAddOnMetadata(ADDON_NAME, "Version") or "1.1" -- from the .toc
 local PIE_TEXTURE = "Interface\\AddOns\\OrbMeter\\media\\piewheel.tga"
 local PIE_FRAMES = 64
 local PIE_GRID = 8
@@ -84,8 +91,10 @@ local defaults = {
 	hideOutOfCombat = true,  -- see UpdateVisibility: this *dims*, it never Hide()s -
 	                         -- the right-click menu has to stay reachable out of combat
 	outOfCombatAlpha = 0.25,
+	maxAlpha = 1.0,          -- opacity in combat (and whenever the orb is not dimmed)
 	adaptive = true,         -- orb follows what you cast (damage <-> healing); a left-click pins the mode
 	hoverScope = "last",     -- hover overview shows the "last" fight or the "total" since reset
+	raidLead = false,        -- Raid Lead view: an always-shown top 3 / bottom 3 of the group
 }
 
 local db
@@ -339,9 +348,9 @@ local function UpdateVisibility()
 		and (GetTime() - combatEndTime) < OUT_OF_COMBAT_GRACE_SECONDS
 
 	if not db.hideOutOfCombat or inCombat or inGrace then
-		frame:SetAlpha(1)
+		frame:SetAlpha(db.maxAlpha)
 	else
-		frame:SetAlpha(db.outOfCombatAlpha)
+		frame:SetAlpha(math.min(db.outOfCombatAlpha, db.maxAlpha)) -- never brighter than in combat
 	end
 end
 
@@ -418,11 +427,37 @@ local function IsReportChannel(value)
 	return false
 end
 
+-- Shown when hovering the menu's version header.
+local COMMAND_HELP = table.concat({
+	"/om options - settings window",
+	"/om lock | unlock - move the orb",
+	"/om size <28-96> - orb size",
+	"/om adaptive [on|off] - follow your casts",
+	"/om raidlead [on|off] - top 3 / bottom 3 of the group",
+	"/om hover last|total - what the hover shows",
+	"/om combat - dim out of combat",
+	"/om alpha <0-100> - opacity when dimmed out of combat",
+	"/om maxalpha <10-100> - opacity in combat (the maximum)",
+	"/om reset - reset the logs",
+	"/om debug - raw tracking numbers",
+}, "\n")
+
 local function OrbMeterMenu_Initialize(self, level)
 	level = level or 1
 
 	if level == 1 then
+		-- Greyed header with the version; hovering it lists the commands.
 		local info = UIDropDownMenu_CreateInfo()
+		info.notCheckable = true
+		info.text = "|cff888888OrbMeter v" .. ADDON_VERSION .. "|r"
+		info.func = function() end
+		info.keepShownOnClick = true -- it is a label: clicking it does nothing
+		info.tooltipTitle = "OrbMeter Commands"
+		info.tooltipText = COMMAND_HELP
+		info.tooltipOnButton = true
+		UIDropDownMenu_AddButton(info, level)
+
+		info = UIDropDownMenu_CreateInfo()
 		info.notCheckable = true
 
 		info.text = "Personal Stats"
@@ -687,129 +722,146 @@ local PANEL_PAD = 6
 local ICON = 14
 local BAR_COLOR = { 0.20, 0.45, 0.90, 0.70 } -- blue: last fight
 
-local panel = CreateFrame("Frame", "OrbMeterPanel", UIParent)
-panel:SetFrameStrata("TOOLTIP")
-panel:SetClampedToScreen(true)
-panel:SetWidth(PANEL_MIN_W)
-panel:Hide()
+-- A panel is a dark box with a heading (label + info) and a pool of bar rows.
+-- The hover overview and the Raid Lead view are two of these. Rows without an
+-- icon (noIcon) start at the left edge.
+local function BuildPanel(frameName, rowPrefix, strata, noIcon)
+	local p = CreateFrame("Frame", frameName, UIParent)
+	p:SetFrameStrata(strata)
+	p:SetClampedToScreen(true)
+	p:SetWidth(PANEL_MIN_W)
+	p:Hide()
+	p.iconW = noIcon and 0 or ICON
+	p.gap = noIcon and 3 or 5 -- from the icon column to the name
 
-local panelBg = panel:CreateTexture(nil, "BACKGROUND")
-panelBg:SetAllPoints(panel)
-panelBg:SetTexture(0, 0, 0, 0.75)
+	local bg = p:CreateTexture(nil, "BACKGROUND")
+	bg:SetAllPoints(p)
+	bg:SetTexture(0, 0, 0, 0.75)
 
--- Heading ("Damage Done" / "Effective Healing") in plain outline, same as the
--- scope and numbers beside it.
-local panelTitle = panel:CreateFontString(nil, "OVERLAY")
-panelTitle:SetFont(STANDARD_TEXT_FONT, 11, "OUTLINE")
-panelTitle:SetPoint("TOPLEFT", panel, "TOPLEFT", PANEL_PAD, -PANEL_PAD + 1)
-panelTitle:SetJustifyH("LEFT")
-local panelInfo = panel:CreateFontString(nil, "OVERLAY")
-panelInfo:SetFont(STANDARD_TEXT_FONT, 11, "OUTLINE")
-panelInfo:SetPoint("LEFT", panelTitle, "RIGHT", 6, 0)
-panelInfo:SetJustifyH("LEFT")
-panel.titleLabel = panelTitle
-panel.titleInfo = panelInfo
+	-- Heading ("Damage Done" / "Effective Healing") in plain outline, same as
+	-- the scope and numbers beside it.
+	local title = p:CreateFontString(nil, "OVERLAY")
+	title:SetFont(STANDARD_TEXT_FONT, 11, "OUTLINE")
+	title:SetPoint("TOPLEFT", p, "TOPLEFT", PANEL_PAD, -PANEL_PAD + 1)
+	title:SetJustifyH("LEFT")
+	local info = p:CreateFontString(nil, "OVERLAY")
+	info:SetFont(STANDARD_TEXT_FONT, 11, "OUTLINE")
+	info:SetPoint("LEFT", title, "RIGHT", 6, 0)
+	info:SetJustifyH("LEFT")
+	p.titleLabel = title
+	p.titleInfo = info
 
-local panelRows = {}
-for i = 1, PANEL_ROWS do
-	local row = CreateFrame("Frame", "OrbMeterPanelRow" .. i, panel)
-	row:SetWidth(PANEL_MIN_W - 2 * PANEL_PAD)
-	row:SetHeight(ROW_H)
-	row:SetPoint("TOPLEFT", panel, "TOPLEFT", PANEL_PAD, -(PANEL_PAD + 17 + (i - 1) * ROW_H))
+	p.rows = {}
+	for i = 1, PANEL_ROWS do
+		local row = CreateFrame("Frame", rowPrefix .. i, p)
+		row:SetWidth(PANEL_MIN_W - 2 * PANEL_PAD)
+		row:SetHeight(ROW_H)
+		row:SetPoint("TOPLEFT", p, "TOPLEFT", PANEL_PAD, -(PANEL_PAD + 17 + (i - 1) * ROW_H))
 
-	row.bar = row:CreateTexture(nil, "BACKGROUND")
-	row.bar:SetTexture("Interface\\TargetingFrame\\UI-StatusBar")
-	row.bar:SetVertexColor(BAR_COLOR[1], BAR_COLOR[2], BAR_COLOR[3], BAR_COLOR[4])
-	row.bar:SetPoint("TOPLEFT", row, "TOPLEFT", ICON + 2, 0)
-	row.bar:SetHeight(ROW_H - 2)
+		row.bar = row:CreateTexture(nil, "BACKGROUND")
+		row.bar:SetTexture("Interface\\TargetingFrame\\UI-StatusBar")
+		row.bar:SetVertexColor(BAR_COLOR[1], BAR_COLOR[2], BAR_COLOR[3], BAR_COLOR[4])
+		row.bar:SetPoint("TOPLEFT", row, "TOPLEFT", noIcon and 0 or ICON + 2, 0)
+		row.bar:SetHeight(ROW_H - 2)
 
-	row.icon = row:CreateTexture(nil, "ARTWORK")
-	row.icon:SetWidth(ICON)
-	row.icon:SetHeight(ICON)
-	row.icon:SetPoint("TOPLEFT", row, "TOPLEFT", 0, -1)
+		row.icon = row:CreateTexture(nil, "ARTWORK")
+		row.icon:SetWidth(ICON)
+		row.icon:SetHeight(ICON)
+		row.icon:SetPoint("TOPLEFT", row, "TOPLEFT", 0, -1)
+		if noIcon then row.icon:Hide() end
 
-	row.nameText = row:CreateFontString(nil, "OVERLAY")
-	row.nameText:SetFont(STANDARD_TEXT_FONT, 10, "OUTLINE")
-	row.nameText:SetPoint("LEFT", row, "LEFT", ICON + 5, 0)
-	row.nameText:SetJustifyH("LEFT")
-	row.nameText:SetHeight(12)
+		row.nameText = row:CreateFontString(nil, "OVERLAY")
+		row.nameText:SetFont(STANDARD_TEXT_FONT, 10, "OUTLINE")
+		row.nameText:SetPoint("LEFT", row, "LEFT", p.iconW + p.gap, 0)
+		row.nameText:SetJustifyH("LEFT")
+		row.nameText:SetHeight(12)
 
-	row.valueText = row:CreateFontString(nil, "OVERLAY")
-	row.valueText:SetFont(STANDARD_TEXT_FONT, 10, "OUTLINE")
-	row.valueText:SetPoint("RIGHT", row, "RIGHT", -2, 0)
-	row.valueText:SetJustifyH("RIGHT")
+		row.valueText = row:CreateFontString(nil, "OVERLAY")
+		row.valueText:SetFont(STANDARD_TEXT_FONT, 10, "OUTLINE")
+		row.valueText:SetPoint("RIGHT", row, "RIGHT", -2, 0)
+		row.valueText:SetJustifyH("RIGHT")
 
-	row:Hide()
-	panelRows[i] = row
+		row:Hide()
+		p.rows[i] = row
+	end
+	return p
 end
 
-local function PlacePanel()
-	panel:ClearAllPoints()
+local panel = BuildPanel("OrbMeterPanel", "OrbMeterPanelRow", "TOOLTIP")
+
+-- Opens the panel above the orb when the orb is low on screen, below it otherwise.
+local function PlacePanel(p)
+	p:ClearAllPoints()
 	local _, cy = frame:GetCenter()
 	local screenH = UIParent:GetHeight()
 	if cy and screenH and cy < screenH / 2 then
-		panel:SetPoint("BOTTOM", frame, "TOP", 0, 4)  -- orb low on screen: open upward
+		p:SetPoint("BOTTOM", frame, "TOP", 0, 4)
 	else
-		panel:SetPoint("TOP", frame, "BOTTOM", 0, -4) -- otherwise open downward
+		p:SetPoint("TOP", frame, "BOTTOM", 0, -4)
 	end
 end
 
 -- Sizes the panel to its content: widest of the title and the rows
 -- (icon + name + gap + value), clamped to the limits above. Bars are scaled
--- to whatever width results.
-local function FitPanel(shownRows)
-	local need = panelTitle:GetStringWidth() + 6 + panelInfo:GetStringWidth()
+-- to whatever width results. Returns the room for a full-length bar.
+local function FitPanel(p, shownRows)
+	local need = p.titleLabel:GetStringWidth() + 6 + p.titleInfo:GetStringWidth()
 	for i = 1, shownRows do
-		local row = panelRows[i]
+		local row = p.rows[i]
 		row.nameText:SetWidth(0) -- unconstrained, so it reports its real width
 		local nameW = math.min(row.nameText:GetStringWidth(), MAX_NAME_W)
 		row.nameText:SetWidth(nameW)
-		need = math.max(need, ICON + 5 + nameW + 14 + row.valueText:GetStringWidth() + 2)
+		need = math.max(need, p.iconW + p.gap + nameW + 14 + row.valueText:GetStringWidth() + 2)
 	end
 	local w = math.max(PANEL_MIN_W, math.min(PANEL_MAX_W, math.ceil(need) + 2 * PANEL_PAD))
-	panel:SetWidth(w)
-	for i = 1, PANEL_ROWS do panelRows[i]:SetWidth(w - 2 * PANEL_PAD) end
-	return w - 2 * PANEL_PAD - ICON - 2 -- room for a full-length bar
+	p:SetWidth(w)
+	for i = 1, PANEL_ROWS do p.rows[i]:SetWidth(w - 2 * PANEL_PAD) end
+	return w - 2 * PANEL_PAD - p.iconW - (p.iconW > 0 and 2 or 0)
 end
 
+-- Which fight the hover overview and the Raid Lead view show: the one in
+-- progress (flagged Current) while there is one, else the last completed fight;
+-- the Total setting overrides both.
+local function ViewScope()
+	if db and db.hoverScope == "total" then return "total" end
+	if OrbMeter_InCombat and OrbMeter_InCombat() then return "current" end
+	return "last"
+end
+
+local SCOPE_TAG = { total = "(Total)", current = "(Current)", last = "(Last)" }
+
+-- Hover overview: your own top abilities in the orb's current mode.
 local function RefreshPanel()
 	local mode = OrbMeter_GetCurrentMode and OrbMeter_GetCurrentMode() or "dps"
 	local kind = (mode == "healing") and "healing" or "damage"
-	-- "Last" setting: the fight in progress (flagged as Current) while there is
-	-- one, otherwise the last completed fight.
-	local scope = "last"
-	if db and db.hoverScope == "total" then
-		scope = "total"
-	elseif OrbMeter_InCombat and OrbMeter_InCombat() then
-		scope = "current"
-	end
+	local scope = ViewScope()
 	local rows, own, duration
 	if OrbMeter_GetAbilityRows then rows, own, duration = OrbMeter_GetAbilityRows(kind, PANEL_ROWS, scope) end
 
-	local scopeName = (scope == "total") and "(Total)" or (scope == "current") and "(Current)" or "(Last)"
-	panelTitle:SetText((kind == "healing") and "Effective Healing" or "Damage Done")
+	local scopeName = SCOPE_TAG[scope]
+	panel.titleLabel:SetText((kind == "healing") and "Effective Healing" or "Damage Done")
 	if not rows then
-		panelInfo:SetText(scopeName .. " no data yet")
-		for i = 1, PANEL_ROWS do panelRows[i]:Hide() end
-		FitPanel(0)
+		panel.titleInfo:SetText(scopeName .. " no data yet")
+		for i = 1, PANEL_ROWS do panel.rows[i]:Hide() end
+		FitPanel(panel, 0)
 		panel:SetHeight(PANEL_PAD * 2 + 17)
 		return
 	end
 
 	local fmt = OrbMeter_FormatNumber or tostring
-	panelInfo:SetText(string.format("%s %s - %s %s", scopeName, fmt(own), fmt(own / duration), (kind == "healing") and "HPS" or "DPS"))
+	panel.titleInfo:SetText(string.format("%s %s - %s %s", scopeName, fmt(own), fmt(own / duration), (kind == "healing") and "HPS" or "DPS"))
 
 	for i = 1, PANEL_ROWS do
-		local row, r = panelRows[i], rows[i]
+		local row, r = panel.rows[i], rows[i]
 		if r then
 			row.nameText:SetText(r.name)
 			row.valueText:SetText(string.format("%s  %.0f%%", fmt(r.value), r.share))
 			row.icon:SetTexture(r.icon or "Interface\\Icons\\INV_Misc_QuestionMark")
 		end
 	end
-	local barMax = FitPanel(#rows)
+	local barMax = FitPanel(panel, #rows)
 	for i = 1, PANEL_ROWS do
-		local row, r = panelRows[i], rows[i]
+		local row, r = panel.rows[i], rows[i]
 		if r then
 			row.bar:SetWidth(math.max(1, barMax * r.share / 100))
 			row:Show()
@@ -821,20 +873,125 @@ local function RefreshPanel()
 end
 
 local function ShowPanel()
-	PlacePanel()
+	PlacePanel(panel)
 	RefreshPanel()
 	panel:Show()
+end
+
+--------------------------------------------------------------------------
+-- Raid Lead view
+--------------------------------------------------------------------------
+-- An always-shown panel beside the orb: the top 3 and bottom 3 of the group
+-- by damage, then by healing, switching every LEAD_CYCLE seconds. A "~" row
+-- stands for the players in between. Hovering the orb swaps it for the usual
+-- personal overview until the mouse leaves. Only people who contributed are
+-- ranked, so a healer's 0 damage doesn't clutter the bottom of the damage list.
+
+local LEAD_CYCLE = 5   -- seconds per list
+local LEAD_EDGE = 3    -- how many to show from each end
+local LEAD_SELF_COLOR = { 1, 0.82, 0 }
+local LEAD_BAR_SELF = { 0.85, 0.6, 0.1, 0.7 }
+
+local leadPanel = BuildPanel("OrbMeterLeadPanel", "OrbMeterLeadRow", "HIGH", true)
+local leadKind = "damage"  -- the list on show; flips every LEAD_CYCLE seconds
+local leadTimer = 0
+
+-- The rows to draw for a ranked list: all of it when short, otherwise the
+-- top and bottom LEAD_EDGE around a { between = n } marker.
+local function LeadSelection(list)
+	local out = {}
+	if #list <= 2 * LEAD_EDGE then
+		for i = 1, #list do out[#out + 1] = list[i] end
+		return out
+	end
+	for i = 1, LEAD_EDGE do out[#out + 1] = list[i] end
+	out[#out + 1] = { between = #list - 2 * LEAD_EDGE }
+	for i = #list - LEAD_EDGE + 1, #list do out[#out + 1] = list[i] end
+	return out
+end
+
+local function RefreshLead()
+	local scope = ViewScope()
+	local lists = {}
+	for _, kind in ipairs({ "damage", "healing" }) do
+		lists[kind] = OrbMeter_GetRanking and OrbMeter_GetRanking(scope, kind) or {}
+	end
+	-- show the list that is due; fall back to the other when it has nobody
+	local kind = leadKind
+	if #lists[kind] == 0 then kind = (kind == "damage") and "healing" or "damage" end
+	local list = lists[kind]
+	local isHealing = (kind == "healing")
+	local rate = isHealing and "HPS" or "DPS"
+
+	leadPanel.titleLabel:SetText(isHealing and "Effective Healing" or "Damage Done")
+	if #list == 0 then
+		leadPanel.titleInfo:SetText(SCOPE_TAG[scope] .. " no data yet")
+		for i = 1, PANEL_ROWS do leadPanel.rows[i]:Hide() end
+		FitPanel(leadPanel, 0)
+		leadPanel:SetHeight(PANEL_PAD * 2 + 17)
+		return
+	end
+	leadPanel.titleInfo:SetText(SCOPE_TAG[scope] .. " Raid")
+
+	local fmt = OrbMeter_FormatNumber or tostring
+	local sel = LeadSelection(list)
+	local top = list[1].value
+	for i = 1, PANEL_ROWS do
+		local row, r = leadPanel.rows[i], sel[i]
+		if r and r.between then
+			row.nameText:SetText(string.format("~ ~ ~  %d more  ~ ~ ~", r.between))
+			row.nameText:SetTextColor(0.6, 0.6, 0.6)
+			row.valueText:SetText("")
+		elseif r then
+			row.nameText:SetText(string.format("%d. %s", r.rank, r.name))
+			local c = r.self and LEAD_SELF_COLOR or { 1, 1, 1 }
+			row.nameText:SetTextColor(c[1], c[2], c[3])
+			row.valueText:SetText(string.format("%s  %s %s", fmt(r.value), fmt(r.rate), rate))
+		end
+	end
+	local barMax = FitPanel(leadPanel, #sel)
+	for i = 1, PANEL_ROWS do
+		local row, r = leadPanel.rows[i], sel[i]
+		if r and r.between then
+			row.bar:Hide()
+			row:Show()
+		elseif r then
+			local bc = r.self and LEAD_BAR_SELF or BAR_COLOR
+			row.bar:SetVertexColor(bc[1], bc[2], bc[3], bc[4])
+			row.bar:SetWidth(math.max(1, barMax * r.value / top))
+			row.bar:Show()
+			row:Show()
+		else
+			row:Hide()
+		end
+	end
+	leadPanel:SetHeight(PANEL_PAD * 2 + 17 + #sel * ROW_H)
+end
+
+-- Shows, refreshes or hides the Raid Lead panel: shown only when the setting
+-- is on, you are in a group, and the mouse is not on the orb.
+local function UpdateLead()
+	local grouped = ((GetNumRaidMembers and GetNumRaidMembers() or 0) + (GetNumPartyMembers and GetNumPartyMembers() or 0)) > 0
+	if db and db.raidLead and grouped and not isMouseOver then
+		PlacePanel(leadPanel)
+		RefreshLead()
+		leadPanel:Show()
+	else
+		leadPanel:Hide()
+	end
 end
 
 frame:SetScript("OnEnter", function(self)
 	isMouseOver = true
 	UpdateVisibility()
+	UpdateLead() -- the Raid Lead view steps aside for the personal overview
 	ShowPanel()
 end)
 frame:SetScript("OnLeave", function(self)
 	isMouseOver = false
 	UpdateVisibility()
 	panel:Hide()
+	UpdateLead()
 end)
 
 frame:RegisterEvent("PLAYER_REGEN_DISABLED") -- entering combat
@@ -867,6 +1024,11 @@ local updateAccum = 0
 local UPDATE_INTERVAL = 0.2
 
 frame:SetScript("OnUpdate", function(self, elapsed)
+	leadTimer = leadTimer + elapsed
+	if leadTimer >= LEAD_CYCLE then
+		leadTimer = 0
+		leadKind = (leadKind == "damage") and "healing" or "damage"
+	end
 	updateAccum = updateAccum + elapsed
 	if updateAccum >= UPDATE_INTERVAL then
 		updateAccum = 0
@@ -879,6 +1041,7 @@ frame:SetScript("OnUpdate", function(self, elapsed)
 		PollThreatTarget()
 
 		if panel:IsShown() then RefreshPanel() end
+		UpdateLead()
 
 		local mode = OrbMeter_GetCurrentMode and OrbMeter_GetCurrentMode() or "dps"
 
@@ -929,6 +1092,12 @@ local function SetOutOfCombatAlpha(pct)
 	RefreshOptions()
 end
 
+local function SetMaxAlpha(pct)
+	db.maxAlpha = pct / 100
+	UpdateVisibility()
+	RefreshOptions()
+end
+
 local function SetOrbSize(n)
 	ApplySize(n)
 	RefreshOptions()
@@ -943,6 +1112,14 @@ end
 local function SetHoverScope(scope)
 	db.hoverScope = (scope == "total") and "total" or "last"
 	if panel:IsShown() then RefreshPanel() end
+	UpdateLead()
+	RefreshOptions()
+end
+
+local function SetRaidLead(on)
+	db.raidLead = on and true or false
+	leadTimer = 0
+	UpdateLead()
 	RefreshOptions()
 end
 
@@ -1028,7 +1205,7 @@ end
 local function BuildOptions()
 	optionsFrame = CreateFrame("Frame", "OrbMeterOptions", UIParent)
 	optionsFrame:SetWidth(OPT_W)
-	optionsFrame:SetHeight(406)
+	optionsFrame:SetHeight(482)
 	local pos = db.optionsPos
 	if pos then
 		optionsFrame:SetPoint(pos[1], UIParent, pos[2], pos[3], pos[4])
@@ -1086,24 +1263,29 @@ local function BuildOptions()
 		"Adaptive Tracking",
 		"Switches the orb between Damage and Healing while you fight: three damage spells (or three healing spells) in a row and it follows what you cast. Your spec and form only set the starting mode, out of combat.")
 
-	-- the two hover choices are tabbed in under their heading
-	c.hoverHeading = MakeLabel(optionsFrame, "Hover overview shows", 26, -130)
-	c.hoverHeading:SetTextColor(1, 0.82, 0)
-	c.hoverLast = MakeCheck("OrbMeterOptHoverLast", 44, -146, "Last Fight", function() SetHoverScope("last") end)
-	c.hoverTotal = MakeCheck("OrbMeterOptHoverTotal", 44, -170, "Total", function() SetHoverScope("total") end)
+	c.lead = MakeCheck("OrbMeterOptLead", 22, -122, "Raid Lead view (always shown)", SetRaidLead,
+		"Raid Lead view",
+		"Keeps a panel beside the orb showing the top 3 and bottom 3 of your group, by damage and then by healing, switching every 5 seconds. Only works in a group. Hover the orb for your own abilities.")
 
-	c.size = MakeSlider("OrbMeterOptSize", -222, MIN_SIZE, MAX_SIZE, 1, tostring(MIN_SIZE), tostring(MAX_SIZE), SetOrbSize)
-	c.alpha = MakeSlider("OrbMeterOptAlpha", -272, 0, 100, 5, "0%", "100%", SetOutOfCombatAlpha)
+	-- the two hover choices are tabbed in under their heading
+	c.hoverHeading = MakeLabel(optionsFrame, "Hover overview shows", 26, -156)
+	c.hoverHeading:SetTextColor(1, 0.82, 0)
+	c.hoverLast = MakeCheck("OrbMeterOptHoverLast", 44, -172, "Last Fight", function() SetHoverScope("last") end)
+	c.hoverTotal = MakeCheck("OrbMeterOptHoverTotal", 44, -196, "Total", function() SetHoverScope("total") end)
+
+	c.size = MakeSlider("OrbMeterOptSize", -248, MIN_SIZE, MAX_SIZE, 1, tostring(MIN_SIZE), tostring(MAX_SIZE), SetOrbSize)
+	c.maxalpha = MakeSlider("OrbMeterOptMaxAlpha", -298, 10, 100, 5, "10%", "100%", SetMaxAlpha)
+	c.alpha = MakeSlider("OrbMeterOptAlpha", -348, 0, 100, 5, "0%", "100%", SetOutOfCombatAlpha)
 
 	-- A plain note (no checkbox), empty unless the FadeOut addon is installed.
-	c.fade = MakeLabel(optionsFrame, "", 26, -320)
+	c.fade = MakeLabel(optionsFrame, "", 26, -396)
 	c.fade:SetTextColor(1, 0.82, 0)
 	optionsFrame.fadeNote = c.fade
 
 	c.reset = CreateFrame("Button", "OrbMeterOptReset", optionsFrame, "UIPanelButtonTemplate")
 	c.reset:SetWidth(OPT_INNER)
 	c.reset:SetHeight(22)
-	c.reset:SetPoint("TOPLEFT", optionsFrame, "TOPLEFT", 24, -354)
+	c.reset:SetPoint("TOPLEFT", optionsFrame, "TOPLEFT", 24, -430)
 	c.reset:SetText("Reset Logs")
 	local ver = optionsFrame:CreateFontString(nil, "OVERLAY")
 	ver:SetFont(STANDARD_TEXT_FONT, 10, "")
@@ -1124,9 +1306,13 @@ RefreshOptions = function()
 	c.lock:SetChecked(db.locked)
 	c.dim:SetChecked(db.hideOutOfCombat)
 	c.adaptive:SetChecked(db.adaptive)
+	c.lead:SetChecked(db.raidLead)
 	c.size:SetValue(db.size)
 	c.size.label:SetText("Orb size: " .. db.size)
 	local pct = math.floor(db.outOfCombatAlpha * 100 + 0.5)
+	local maxPct = math.floor(db.maxAlpha * 100 + 0.5)
+	c.maxalpha:SetValue(maxPct)
+	c.maxalpha.label:SetText("Opacity in combat: " .. maxPct .. "%")
 	c.alpha:SetValue(pct)
 	c.alpha.label:SetText("Opacity out of combat: " .. pct .. "%")
 	c.hoverLast:SetChecked(db.hoverScope ~= "total")
@@ -1144,6 +1330,7 @@ RefreshOptions = function()
 	end
 	SetControlEnabled(c.dim, not managed)
 	SetControlEnabled(c.alpha, not managed)
+	SetControlEnabled(c.maxalpha, not managed)
 	refreshingOptions = false
 end
 
@@ -1204,6 +1391,11 @@ local function SlashHandler(msg)
 		if rest == "on" then want = true elseif rest == "off" then want = false else want = not db.adaptive end
 		SetAdaptiveOption(want)
 		Print("adaptive mode: " .. (want and "ON - the orb follows what you cast (a left-click pins it)" or "OFF - mode comes from your spec/form, or your last left-click"))
+	elseif cmd == "raidlead" then
+		local want
+		if rest == "on" then want = true elseif rest == "off" then want = false else want = not db.raidLead end
+		SetRaidLead(want)
+		Print("Raid Lead view: " .. (want and "ON - top 3 / bottom 3 of the group, damage then healing every 5s (needs a group)" or "OFF"))
 	elseif cmd == "hover" then
 		if rest == "last" or rest == "total" then
 			SetHoverScope(rest)
@@ -1213,6 +1405,17 @@ local function SlashHandler(msg)
 		end
 	elseif cmd == "options" or cmd == "config" then
 		ToggleOptions()
+	elseif cmd == "maxalpha" then
+		local n = tonumber(rest)
+		if n and n >= 10 and n <= 100 then
+			SetMaxAlpha(n)
+			Print("in-combat opacity set to " .. n .. "%.")
+			if IsFadeOutManaged() then
+				Print("FadeOut currently controls the orb's visibility - untick \"" .. FADEOUT_LABEL .. "\" in /fadeout for this setting to apply.")
+			end
+		else
+			Print("usage: /om maxalpha <10-100>  (current: " .. math.floor(db.maxAlpha * 100 + 0.5) .. "%)")
+		end
 	elseif cmd == "alpha" then
 		local n = tonumber(rest)
 		if n and n >= 0 and n <= 100 then
@@ -1225,7 +1428,7 @@ local function SlashHandler(msg)
 			Print("usage: /om alpha <0-100>  (current: " .. math.floor(db.outOfCombatAlpha * 100 + 0.5) .. "%)")
 		end
 	else
-		Print("commands: options, unlock, lock, size <n>, reset, debug, combat, adaptive [on|off], hover last|total, alpha <0-100>")
+		Print("commands: options, unlock, lock, size <n>, reset, debug, combat, adaptive [on|off], raidlead [on|off], hover last|total, alpha <0-100>, maxalpha <10-100>")
 	end
 end
 
@@ -1243,7 +1446,12 @@ init:SetScript("OnEvent", function(self, event, name)
 	if name ~= ADDON_NAME then return end
 
 	OrbMeterDB = OrbMeterDB or {}
+	local firstRun = next(OrbMeterDB) == nil -- nothing saved yet: a fresh install
 	db = CopyDefaults(OrbMeterDB, defaults)
+	if firstRun then
+		-- Start unlocked, so the border shows and the orb is easy to find.
+		db.locked = false
+	end
 
 	if OrbMeter_SetAdaptive then OrbMeter_SetAdaptive(db.adaptive) end
 	ApplyPosition()
@@ -1262,6 +1470,10 @@ init:SetScript("OnEvent", function(self, event, name)
 	end
 
 	UpdateVisibility()
+
+	if firstRun then
+		Print("first start: the orb is unlocked so you can find it (just below the centre of the screen). Drag it where you want it, then /om lock. /om options opens the settings.")
+	end
 
 	self:UnregisterEvent("ADDON_LOADED")
 end)

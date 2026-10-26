@@ -1231,6 +1231,24 @@ local function AbilitiesFor(scope, kind)
 	return EMPTY
 end
 
+-- The whole group ranked for a scope and kind, best first, for the Raid Lead
+-- view: { { rank, name, value, rate, share, self }, ... } for everyone who
+-- contributed (value > 0), plus the duration and the group total.
+local function GetRanking(scope, kind)
+	local entries, duration, groupTotal = BuildTopList(scope, kind)
+	local list = {}
+	for _, e in ipairs(entries) do
+		if e.value > 0 then
+			list[#list + 1] = {
+				rank = #list + 1, name = e.name or "Unknown", value = e.value, self = e.self,
+				rate = e.value / duration,
+				share = groupTotal > 0 and e.value / groupTotal * 100 or 100,
+			}
+		end
+	end
+	return list, duration, groupTotal
+end
+
 -- A share of the group only means something with at least two contributors.
 local function CountContributors(entries)
 	local n = 0
@@ -1412,6 +1430,7 @@ OrbMeter_GetAbilityRows = GetAbilityRows
 OrbMeter_SetAdaptive = SetAdaptive
 OrbMeter_IsAdaptive = IsAdaptive
 OrbMeter_GetTopReportLines = GetTopReportLines
+OrbMeter_GetRanking = GetRanking
 
 -- Testing aid only - prints raw internal state so tracking math can be
 -- sanity-checked against what you actually did in-game.
