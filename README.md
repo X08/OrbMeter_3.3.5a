@@ -75,6 +75,7 @@ Open it from the right-click menu or with `/om options`. Every setting is also a
 | `/om unlock` / `/om lock` | Show the border and allow dragging / lock it again |
 | `/om size <28-96>` | Orb size (28 is the default and the minimum) |
 | `/om adaptive [on\|off]` | Orb follows what you cast (toggles if no argument) |
+| `/om raidlead [on|off]`	| Always-shown top 3 / bottom 3 of the group (toggles if no argument) | 
 | `/om hover last\|total` | What the hover overview shows |
 | `/om combat` | Toggle dimming out of combat |
 | `/om alpha <0-100>` | Opacity (%) the orb dims to out of combat |
@@ -113,6 +114,14 @@ If the **FadeOut** addon is installed, OrbMeter registers with it as "Orb Meter"
 Run `/om debug` right after the problem and include the line, along with your class, spec, group size and what you expected. Bugs, ideas and feedback are welcome.
 
 ## Changelog
+
+**1.1**
+
+- Raid Lead view: healers are excluded from the damage list and damage dealers from the healing list (hybrids at 50% of the other list's top appear in both).
+- New: maximum opacity (/om maxalpha, options slider) for an orb that is too bright in combat. It is also the ceiling for the dimmed opacity.
+- New: on a fresh install the orb starts unlocked and says where it is.
+- New: the right-click menu starts with a greyed version header; hovering it lists the slash commands.
+- New: Raid Lead view, an always-shown top 3 / bottom 3 of the group, alternating between damage and healing every 5 seconds. /om raidlead and an - options checkbox. Off by default.
 
 **1.0**
 - First public release.
