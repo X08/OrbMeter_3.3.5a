@@ -115,9 +115,10 @@ Run `/om debug` right after the problem and include the line, along with your cl
 
 ## Changelog
 
-**1.1**
-
+**1.1.1**
 - Raid Lead view: healers are excluded from the damage list and damage dealers from the healing list (hybrids at 50% of the other list's top appear in both).
+
+**1.1**
 - New: maximum opacity (/om maxalpha, options slider) for an orb that is too bright in combat. It is also the ceiling for the dimmed opacity.
 - New: on a fresh install the orb starts unlocked and says where it is.
 - New: the right-click menu starts with a greyed version header; hovering it lists the slash commands.
