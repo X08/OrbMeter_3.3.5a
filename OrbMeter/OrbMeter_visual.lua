@@ -910,11 +910,62 @@ local function LeadSelection(list)
 	return out
 end
 
+local LEAD_OTHER_LIST = 0.5   -- a player also appears in their weaker list from this share of its top
+local LEAD_SETTLE = 5          -- seconds a current fight must run before it decides who is a healer
+
+-- Splits the group into the two lists. A player's role is the list where they
+-- are relatively stronger (their value as a share of that list's top); they
+-- also appear in the other list when they reach LEAD_OTHER_LIST of its top
+-- (a real hybrid). Both lists are re-ranked afterwards.
+local function SplitByRole(dmg, heal)
+	local topD = dmg[1] and dmg[1].value or 0
+	local topH = heal[1] and heal[1].value or 0
+	local dShare, hShare = {}, {}
+	for _, e in ipairs(dmg) do dShare[e.name] = e.value / topD end
+	for _, e in ipairs(heal) do hShare[e.name] = e.value / topH end
+	local function keep(list, mine, other)
+		local out = {}
+		for _, e in ipairs(list) do
+			local m, o = mine[e.name] or 0, other[e.name] or 0
+			if m >= o or m >= LEAD_OTHER_LIST then
+				local c = {}
+				for k, v in pairs(e) do c[k] = v end
+				c.rank = #out + 1
+				out[#out + 1] = c
+			end
+		end
+		return out
+	end
+	return keep(dmg, dShare, hShare), keep(heal, hShare, dShare)
+end
+
 local function RefreshLead()
 	local scope = ViewScope()
 	local lists = {}
 	for _, kind in ipairs({ "damage", "healing" }) do
 		lists[kind] = OrbMeter_GetRanking and OrbMeter_GetRanking(scope, kind) or {}
+	end
+	-- who is a healer is judged on the last fight while the current one is still young
+	local roleD, roleH = lists.damage, lists.healing
+	if scope == "current" and OrbMeter_GetRanking then
+		local _, dur = OrbMeter_GetRanking("current", "damage")
+		if dur < LEAD_SETTLE then
+			local ld, lh = OrbMeter_GetRanking("last", "damage"), OrbMeter_GetRanking("last", "healing")
+			if #ld > 0 or #lh > 0 then roleD, roleH = ld, lh end
+		end
+	end
+	local sd, sh = SplitByRole(roleD, roleH)
+	local inD, inH = {}, {}
+	for _, e in ipairs(sd) do inD[e.name] = true end
+	for _, e in ipairs(sh) do inH[e.name] = true end
+	for kind, member in pairs({ damage = inD, healing = inH }) do
+		local out = {}
+		for _, e in ipairs(lists[kind]) do
+			-- people unknown to the role split (new this fight) default to being listed
+			local known = (roleD ~= lists.damage) and (inD[e.name] ~= nil or inH[e.name] ~= nil) or (roleD == lists.damage)
+			if member[e.name] or not known then e.rank = #out + 1; out[#out + 1] = e end
+		end
+		lists[kind] = out
 	end
 	-- show the list that is due; fall back to the other when it has nobody
 	local kind = leadKind
